@@ -8,14 +8,16 @@ from scipy.integrate import trapezoid
 GALAXY_DIR = Path(r"C:\Users\lmf53\OneDrive - University of Canterbury\CAS\templates")
 LBG_DIR = Path(r"C:\Users\lmf53\OneDrive - University of Canterbury\CAS\LBG_templates\LBG_templates")
 FILTER_DIR = Path(r"C:\Users\lmf53\OneDrive - University of Canterbury\CAS\CFHT_megacam_filters_Cooke2013")
-OUTPUT_DIR = Path(r"C:\Users\lmf53\OneDrive - University of Canterbury\CAS\color-color_output")
+OUTPUT_DIR = Path(r"C:\Users\lmf53\OneDrive - University of Canterbury\CAS\trial_output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-LBG_Z_MIN = 3.0
-LBG_Z_MAX = 5.5 #normal is 3.5, mid is 5.0, high is 7.0, extra high is 12
-Z_STEP = 0.05
 
-REDSHIFTS = np.arange(LBG_Z_MIN, LBG_Z_MAX, Z_STEP)
+LBG_Z_MIN = 1.0
+LBG_Z_MAX = 3.0
+Z_STEP = 0.1
+REDSHIFTS = np.arange(LBG_Z_MIN, LBG_Z_MAX + Z_STEP/2, Z_STEP)
+Z_MARKER_INTERVAL = 0.5
+
 NORM_MIN = 1300.0 #Angstrom
 NORM_MAX = 1500.0 #Angstrom
 LYMAN_LIMIT = 912.0
@@ -79,16 +81,21 @@ def apply_lyman_limit(wavelength, flux):
     return flux
 
 
+
 def lya_forest(redshift):
-    """The flux decrement is about zero (i.e., nearly no effect) at z ~ 1 
-    and slowly increases in attenuating the flux up to z ~ 6, where it is nearly 100% attenuated
-    Transmission is 1 at z <= 1 and zero at z >= 6."""
+    """
+    z = 1: 35% increase
+    z = 3: no correction
+    z = 6: 65% decrease
+    """
     if redshift <= FOREST_Z_MIN:
-        return 1.0
+        return 1.35
     if redshift >= FOREST_Z_MAX:
-        return 0.0
-    x = ((redshift - FOREST_Z_MIN) /(FOREST_Z_MAX - FOREST_Z_MIN))
-    return 1.0 - x**2
+        return 0.35
+    if redshift <= LBG_REFERENCE_REDSHIFT:
+        return np.interp(redshift,[FOREST_Z_MIN, LBG_REFERENCE_REDSHIFT],[1.35, 1.0])
+    else:
+        return np.interp(redshift,[LBG_REFERENCE_REDSHIFT, FOREST_Z_MAX],[1.0, 0.35])
 
 
 def apply_lyman_forest(wavelength, flux, redshift):
@@ -100,14 +107,15 @@ def apply_lyman_forest(wavelength, flux, redshift):
     return flux
 
 
+
 def correct_lbg_forest(wavelength, flux, redshift):
     """Correct the existing forest attenuation, already assumed to include the forest attenuation at z~3."""
     flux = flux.copy()
-    original_transmission = (LBG_REFERENCE_REDSHIFT)
+    original_transmission = lya_forest(LBG_REFERENCE_REDSHIFT)
     new_transmission = lya_forest(redshift)
-    mask = ((wavelength >= LYMAN_LIMIT) & (wavelength < LYMAN_ALPHA))
-    if original_transmission != 0: #To avoid the division by z
-        flux[mask] = flux[mask] * (new_transmission / original_transmission)
+    mask = ((wavelength >= LYMAN_LIMIT) &(wavelength < LYMAN_ALPHA))
+    if original_transmission != 0:
+        flux[mask] *= new_transmission / original_transmission
     else:
         flux[mask] = 0.0
     return flux
@@ -149,13 +157,27 @@ def calculate_filter_flux(spectrum_wavelength,spectrum_flux,filter_wavelength,fi
 
     numerator = trapezoid(flux * throughput * covered_wavelength, covered_wavelength)
     mean_fnu = numerator / (C * covered_response)
-    if not np.isfinite(mean_fnu) or mean_fnu <= 0:
-        return np.nan
+    # if not np.isfinite(mean_fnu) or mean_fnu <= 0:
+    #     return np.nan
     
+    if not np.isfinite(mean_fnu):
+        return np.nan
+
+    if mean_fnu == 0:
+        return 0.0
+
+    if mean_fnu < 0:
+        return np.nan
+
     return mean_fnu
 
 
+
 def calculate_ab_magnitude(mean_fnu):
+    if mean_fnu == 0:
+        return np.inf
+    if not np.isfinite(mean_fnu) or mean_fnu < 0:
+        return np.nan
     return -2.5 * np.log10(mean_fnu)
 
 
@@ -170,10 +192,11 @@ def calculate_magnitudes(wavelength, flux, filters):
 
 def calculate_colours(magnitudes):
     colours = {}
-    colours["u-g"] = (magnitudes["u"] - magnitudes["g"])
-    colours["g-r"] = (magnitudes["g"] - magnitudes["r"])
-    colours["g-i"] = (magnitudes["g"] - magnitudes["i"])
-    colours["r-i"] = (magnitudes["r"] - magnitudes["i"])
+    colours["u-g"] = magnitudes["u"] - magnitudes["g"]
+    colours["g-r"] = magnitudes["g"] - magnitudes["r"]
+    colours["g-i"] = magnitudes["g"] - magnitudes["i"]
+    colours["r-i"] = magnitudes["r"] - magnitudes["i"]
+    colours["i-z"] = magnitudes["i"] - magnitudes["z"]
     return colours
 
 def calculate_evolution_tracks(spectra,filters,redshifts,is_lbg=False):
@@ -183,7 +206,7 @@ def calculate_evolution_tracks(spectra,filters,redshifts,is_lbg=False):
     for name, spectrum in spectra.items():
         wavelength = spectrum["wavelength"]
         flux = spectrum["flux"]
-        track = {"redshift": [], "u-g": [], "g-r": [], "g-i": [], "r-i": []}
+        track = {"redshift": [], "u-g": [], "g-r": [],"g-i": [],"r-i": [],"i-z": []}
 
         for redshift in redshifts:
             obs_wave, obs_flux = prepare_spectrum(wavelength, flux, redshift, is_lbg = is_lbg)
@@ -228,60 +251,110 @@ def plot_rest_frame_spectra(galaxy_spectra, lbg_spectra):
     ax.set_ylim()
     ax.legend(loc="upper right",ncol=2, fontsize='small')
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "high3z5._normalised_spectra.png")
+    fig.savefig(OUTPUT_DIR / "3_normalised_spectra.png")
     plt.show()
 
 
-def plot_tracks(ax,tracks,x_colour,y_colour,colour_map):
+def prepare_plot_colours(colours, limit=15):
+    colours = np.asarray(colours, dtype=float).copy()
+    colours[np.isposinf(colours)] = limit
+    colours[np.isneginf(colours)] = -limit
+    return colours
+
+
+# def plot_tracks(ax, tracks, x_colour, y_colour, colour_map):
+#     for name, track in tracks.items():
+#         x = track[x_colour]
+#         y = track[y_colour]
+#         redshift = track["redshift"]
+#         marker_indices = np.where(np.isclose(redshift / Z_MARKER_INTERVAL, np.round(redshift / Z_MARKER_INTERVAL), atol=1e-8))[0]
+#         ax.plot(x,y, color=colour_map[name], label=name.replace("_", " "), marker="o", markevery=marker_indices,
+#             markersize=3)
+def plot_tracks(ax, tracks, x_colour, y_colour, colour_map):
+
     for name, track in tracks.items():
-        x = track[x_colour]
-        y = track[y_colour]
-        ax.plot(x,y,color=colour_map[name],label=name.replace("_", " "))
+        x = prepare_plot_colours(track[x_colour])
+        y = prepare_plot_colours(track[y_colour])
+        redshift = track["redshift"]
+        marker_indices = np.where(
+            np.isclose(redshift / Z_MARKER_INTERVAL,
+                np.round(redshift / Z_MARKER_INTERVAL),atol=1e-8))[0]
+
+        ax.plot(x,y,color=colour_map[name],label=name.replace("_", " "), marker="o",
+            markevery=marker_indices, markersize=3)
+
+    ax.set_xlim(-1, 7)
+    ax.set_ylim(-1, 7)
 
 
-def plot_colour_colour(galaxy_tracks,lbg_tracks):
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+
+def plot_colour_colour(galaxy_tracks, lbg_tracks):
+    fig, axes = plt.subplots(2, 2, figsize=(10, 9))
+    axes = axes.flatten()
     for ax in axes:
         ax.set_box_aspect(1)
-    galaxy_palette = ["darkred", "red", "blue", "green", "darkgreen","darkblue","darkorange","purple","brown","teal"]
-    galaxy_colours = {name: galaxy_palette[i % len(galaxy_palette)]
-        for i, name in enumerate(galaxy_tracks)}
-    
-    lbg_palette = ["magenta","blue","cyan","gold"]
-    lbg_colours = {name: lbg_palette[i % len(lbg_palette)]
-        for i, name in enumerate(lbg_tracks)}
+    galaxy_palette = ["darkred", "red", "blue", "green", "darkgreen",
+        "darkblue", "darkorange", "purple", "brown", "teal"]
+    galaxy_colours = {name: galaxy_palette[i % len(galaxy_palette)] for i, name in enumerate(galaxy_tracks)}
 
-    panels = [{"x": "g-r", "y": "u-g", "number": 1}, {"x": "g-i", "y": "u-g", "number": 2}, {"x": "r-i", "y": "g-r", "number": 3}]
+    lbg_palette = ["magenta", "blue", "cyan", "gold"]
+    lbg_colours = {name: lbg_palette[i % len(lbg_palette)] for i, name in enumerate(lbg_tracks)}
+
+    panels = [
+        {"x": "g-r", "y": "u-g"},
+        {"x": "g-i", "y": "u-g"},
+        {"x": "r-i", "y": "g-r"},
+        {"x": "i-z", "y": "r-i"}
+    ]
 
     for ax, panel in zip(axes, panels):
-        plot_tracks(ax,galaxy_tracks,panel["x"],panel["y"],galaxy_colours)
-        plot_tracks(ax,lbg_tracks,panel["x"],panel["y"],lbg_colours)        
+        plot_tracks(ax, galaxy_tracks,panel["x"], panel["y"], galaxy_colours)
+        plot_tracks(ax, lbg_tracks, panel["x"], panel["y"], lbg_colours)
+
         ax.set_xlabel(panel["x"])
         ax.set_ylabel(panel["y"])
-        ax.legend(loc='best', fontsize='small', ncol=2)
-    
+        ax.legend(loc="best", fontsize="small", ncol=2)
+
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "high3z5.5_colour_colour.png")
+    fig.savefig(OUTPUT_DIR / "3_colour_colour.png")
     plt.show()
+
 
 
 def plot_colour_evolution(galaxy_tracks, lbg_tracks):
-    colour_names = ["u-g", "g-r", "g-i", "r-i"]
-    fig, axes = plt.subplots(2, 2)
+    colour_names = ["u-g", "g-r", "g-i", "r-i", "i-z"]
+    fig, axes = plt.subplots(2,3, figsize=(13, 8))
     axes = axes.flatten()
     for ax, colour_name in zip(axes, colour_names):
         ax.set_box_aspect(1)
         for name, track in galaxy_tracks.items():
-            ax.plot(track["redshift"], track[colour_name], label=name)
+            redshift = track["redshift"]
+            marker_indices = np.where(
+                np.isclose(redshift / Z_MARKER_INTERVAL,np.round(redshift / Z_MARKER_INTERVAL),atol=1e-8))[0]
+
+            ax.plot(redshift,track[colour_name],label=name,marker="o",markevery=marker_indices,markersize=3)
 
         for name, track in lbg_tracks.items():
-            ax.plot(track["redshift"], track[colour_name], linestyle="--",label=name)
+            redshift = track["redshift"]
+            marker_indices = np.where(
+                np.isclose(redshift / Z_MARKER_INTERVAL,np.round(redshift / Z_MARKER_INTERVAL),atol=1e-8))[0]
+
+            ax.plot(
+                redshift,
+                track[colour_name],
+                linestyle="--",
+                label=name,
+                marker="o",
+                markevery=marker_indices,
+                markersize=3
+            )
 
         ax.set_xlabel("Redshift")
         ax.set_ylabel(colour_name)
-        ax.legend(loc="best", fontsize="small", ncol=2)
+        ax.legend(loc="best",fontsize="small",ncol=2)
+    axes[-1].set_visible(False)
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "high3z5.5_colour_evolution.png", bbox_inches="tight")
+    fig.savefig(OUTPUT_DIR / "3_colour_evolution.png",bbox_inches="tight")
     plt.show()
 
 
@@ -346,14 +419,3 @@ def main():
 
 main()
 
-# def diagnose_track_coverage(tracks):
-#     colour_names = ["u-g", "g-r", "g-i", "r-i"]
-#     for name, track in tracks.items():
-#         redshift = track["redshift"]
-#         for colour in colour_names:
-#             values = track[colour]
-#             valid = np.isfinite(values)
-#             z_valid = redshift[valid]
-#             print(f"{colour}:z = {z_valid.min():.2f} to {z_valid.max():.2f}")
-
-#    diagnose_track_coverage(lbg_tracks)

@@ -69,6 +69,27 @@ def plot_extension(name, original_wavelength, original_flux, extended_wavelength
     plt.close(fig)
 
 
+def extend_lbg_spectra(spectra):
+    rng = np.random.default_rng(RANDOM_SEED)
+
+    for name, spectrum in spectra.items():
+        wavelength = spectrum["wavelength"]
+        flux = spectrum["flux"]
+
+        extended_wavelength, extended_flux = extend_spectrum(
+            wavelength, flux, rng=rng
+        )
+
+        spectrum["wavelength"] = extended_wavelength
+        spectrum["flux"] = extended_flux
+
+        print(
+            f"Extended {name}: "
+            f"{wavelength[-1]:.0f} to "
+            f"{extended_wavelength[-1]:.0f} Angstrom"
+        )
+
+    return spectra
 
 def main():
     files = find_spectrum_files(LBG_DIR)
